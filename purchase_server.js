@@ -11,42 +11,16 @@ export async function main(ns) {
 	const ramLimit = ns.getPurchasedServerMaxRam();
 	let notAllServersMaxed = true;
 
-	let maxPurchaseableRam = ns.getServerMaxRam("home") / 2;  // set half home ram to start
-	if (maxPurchaseableRam > ramLimit) {
-		maxPurchaseableRam = ramLimit;
-	}
-
-	ns.print("Initial RAM tier: " + maxPurchaseableRam + " GB");
-
+	
 	while (notAllServersMaxed) {
-		let ownedServers = ns.getPurchasedServers();
-		ownedServers.sort((a, b) => ns.getServerMaxRam(b) - ns.getServerMaxRam(a));
-		// ns.print(`Purchased servers: ${ownedServers}`);
+		let ownedServers = sortedPurchasedServers(ns);
 
-		if (ownedServers.length > 0) {
-			// never buy for less than we already have
-			maxPurchaseableRam = Math.max(maxPurchaseableRam, ns.getServerMaxRam(ownedServers[0]));
-		}
+		const homeMoney = ns.getServerMoneyAvailable("home");
+		const budget = homeMoney * money_buffer;
 
-		let homeMoney = ns.getServerMoneyAvailable("home");
-		let budget = homeMoney * money_buffer;
-
-		// see if we can afford a higher RAM tier than we already have
-		while (maxPurchaseableRam < ramLimit) {
-			// check for quadruple RAM for not too big jumps and buffer for another potential double RAM afterwards below
-			var nextRamTier = maxPurchaseableRam * 4;
-			var nextRamTierCost = ns.getPurchasedServerCost(nextRamTier);
-			if (budget > nextRamTierCost) {
-				// double RAM
-				maxPurchaseableRam *= 2;
-			}
-			else {	// we found the max affordable ram tier
-				break;
-			}
-		}
+		let maxPurchaseableRam = getMaxPurchaseableRam(ns, budget);
 		let ramUpgradeCost = ns.getPurchasedServerCost(maxPurchaseableRam);
 		ns.print(`maxPurchaseableRam:${maxPurchaseableRam}GB ramUpgradeCost:${ns.nFormat(ramUpgradeCost, '($0.00a)')} budget: ${ns.nFormat(budget, '($0.00a)')}`);
-
 		
 		const purchasedServerLimit = ns.getPurchasedServerLimit();
 		const underServerLimit = ownedServers.length < purchasedServerLimit;
@@ -96,4 +70,43 @@ export async function main(ns) {
 
 		await ns.sleep(1000 * 5);
 	}
+}
+
+function getMaxPurchaseableRam(ns, budget) {
+	const ramLimit = ns.getPurchasedServerMaxRam();
+	
+	//set to half of home ram to start
+	let maxPurchaseableRam = ns.getServerMaxRam("home") / 2;
+	if (maxPurchaseableRam > ramLimit) {
+		maxPurchaseableRam = ramLimit;
+	}
+
+	// never buy for less than we already have
+	let ownedServers = sortedPurchasedServers(ns);
+	if (ownedServers.length > 0) {
+		maxPurchaseableRam = Math.max(maxPurchaseableRam, ns.getServerMaxRam(ownedServers[0]));
+	}
+
+	// see if we can afford a higher RAM tier than we already have
+	while (maxPurchaseableRam < ramLimit) {
+		// check for quadruple RAM for not too big jumps and buffer for another potential double RAM afterwards below
+		var nextRamTier = maxPurchaseableRam * 4;
+		var nextRamTierCost = ns.getPurchasedServerCost(nextRamTier);
+		if (budget > nextRamTierCost) {
+			// double RAM
+			maxPurchaseableRam *= 2;
+		}
+		else {	// we found the max affordable ram tier
+			break;
+		}
+	}
+
+	return maxPurchaseableRam;
+}
+
+function sortedPurchasedServers(ns) {
+	let purchasedServers = ns.getPurchasedServers();
+	purchasedServers.sort((a, b) => ns.getServerMaxRam(b) - ns.getServerMaxRam(a));
+
+	return purchasedServers;
 }
