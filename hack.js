@@ -7,12 +7,15 @@ export async function main(ns) {
 	}
 
 	const server = ns.args[0];
+	let moneyStolen = 0;
 
 	if (ns.args.length >= 3) {
-		await ns.hack(server, { stock: ns.args[2] });
+		moneyStolen += await ns.hack(server, { stock: ns.args[2] });
 	}
 	else {
-		await ns.hack(server);
+		moneyStolen += await ns.hack(server);
 	}
+
+	ns.tprint(`${ns.getHostname()} stole ${ns.nFormat(moneyStolen, '$0,0.00')}`)
 
 }
