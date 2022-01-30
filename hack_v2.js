@@ -117,23 +117,29 @@ export async function main(ns) {
             hackTime = ns.getHackTime(target);
             ns.print(`Weaken Time:${ns.tFormat(weakTime)} Grow Time:${ns.tFormat(growTime)} Hack Time:${ns.tFormat(hackTime)}`);
             var maxAttacksDuringHack = Math.floor((weakTime - timeBetweenAttacks) / timeBetweenAttacks);
-            var moreRamNeed = 0;
             ns.print(`maxAttacks: ${maxAttacksDuringHack}`);
 
             for (parallelAttacks = 1; parallelAttacks < maxAttacksDuringHack; parallelAttacks++) {
                 // check if we have enough RAM for one more attack
-                moreRamNeed = ((weakThreads * (parallelAttacks + 1) + growThreads * (parallelAttacks + 1) +
-                    hackThreads * (parallelAttacks + 1)) * slaveScriptRam);
-                if (moreRamNeed >= ramData.overallFreeRam) {
+                const nextAmountOfParallelAttacks = parallelAttacks + 1;
+                const nextWeakThreads = weakThreads * nextAmountOfParallelAttacks;
+                const nextGrowThreads = growThreads * nextAmountOfParallelAttacks;
+                const nextHackThreads = hackThreads * nextAmountOfParallelAttacks;
+                const nextTotalThreads = nextWeakThreads + nextGrowThreads + nextHackThreads;
+                const nextRamNeeded = nextTotalThreads * slaveScriptRam;
+                const nextRamMoreThanCurrentFreeRam = nextRamNeeded >= ramData.totalFreeRam;
+
+                const nextParallelAttacksMoreThanMax = parallelAttacks >= maxAttacksDuringHack;
+
+                const ratioOfOverallFreeRam = ramData.overallFreeRam / ramData.totalMaxRam;
+                const lessThan10PercentFreeRam = ratioOfOverallFreeRam < 0.1;
+                const lowOverallMaxRam = ramData.overallMaxRam < 512;
+                const lowOnRam = lessThan10PercentFreeRam && lowOverallMaxRam;
+
+                // ns.print(`parallelAttacks: ${parallelAttacks} nextRamNeeded: ${nextRamNeeded} freeRam: ${ramData.totalFreeRam} maxRam: ${ramData.totalMaxRam}`)
+                if (nextRamMoreThanCurrentFreeRam || nextParallelAttacksMoreThanMax || lowOnRam) {
                     // we do not have enough RAM for more attacks
-                    break;
-                }
-                else if (parallelAttacks >= maxAttacksDuringHack) {
-                    // check if max parallel attacks have been limited 
-                    break;
-                }
-                else if ((ramData.overallFreeRam / ramData.overallMaxRam < 0.1) && freeRams.overallMaxRam < 512) {
-                    // if we are low on RAM, go for single attacks for better efficiency
+                    parallelAttacks -= 1;
                     break;
                 }
             }
@@ -172,14 +178,20 @@ export async function main(ns) {
         }
         // ns.print(`weakSleep:${ns.tFormat(weakSleep)} growSleep:${ns.tFormat(growSleep)} hackSleep:${ns.tFormat(hackSleep)}`);
 
-        if (weakThreads > 0) {
-            tryToRunAttack(ns, weakenScriptName, weakThreads, ramData.serverRamData, target, weakSleep);
-        }
-        if (growThreads > 0) {
-            tryToRunAttack(ns, growScriptName, growThreads, ramData.serverRamData, target, growSleep);
-        }
-        if (hackThreads > 0) {
-            tryToRunAttack(ns, hackScriptName, hackThreads, ramData.serverRamData, target, hackSleep);
+        for (let i = 0; i < parallelAttacks; i++) {
+            if (weakThreads > 0) {
+                tryToRunAttack(ns, weakenScriptName, weakThreads, ramData.serverRamData, target, weakSleep);
+            }
+            if (growThreads > 0) {
+                tryToRunAttack(ns, growScriptName, growThreads, ramData.serverRamData, target, growSleep);
+            }
+            if (hackThreads > 0) {
+                tryToRunAttack(ns, hackScriptName, hackThreads, ramData.serverRamData, target, hackSleep);
+            }
+
+            weakSleep += timeBetweenAttacks;
+            growSleep += timeBetweenAttacks;
+            hackSleep += timeBetweenAttacks;
         }
 
 
