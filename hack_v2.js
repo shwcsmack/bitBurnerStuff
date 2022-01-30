@@ -6,7 +6,7 @@ let hackMoneyRatio = 0.1;
 const waitTimeBetweenManagementCycles = 1000;
 
 // time difference between finishing [ hack - grow - weaken ] in burst attacks (in ms)
-const timeDiff = 200;
+const timeBetweenHGW = 200;
 
 // time between burst attacks. Needs to be bigger than 2 * time diff (in ms)
 const timeBetweenAttacks = 500;
@@ -33,22 +33,7 @@ export async function main(ns) {
 
     // initially set hackMoneyRatio based on progress measured by home server RAM
     let homeRam = ns.getServerMaxRam("home");
-    if (homeRam >= 65536) {
-        hackMoneyRatio = 0.99;
-        ns.tprint("Increase hackMoneyRatio to " + hackMoneyRatio)
-    }
-    else if (homeRam >= 16384) {
-        hackMoneyRatio = 0.9;
-        ns.tprint("Increase hackMoneyRatio to " + hackMoneyRatio)
-    }
-    else if (homeRam > 8192) {
-        hackMoneyRatio = 0.5;
-        ns.tprint("Increase hackMoneyRatio to " + hackMoneyRatio)
-    }
-    else if (homeRam > 2048) {
-        hackMoneyRatio = 0.2;
-        ns.tprint("Increase hackMoneyRatio to " + hackMoneyRatio)
-    }
+    hackMoneyRatio = setInitialHackMoneyRatio(ns, homeRam);
     ns.print("INFO initial hack money ratio: " + hackMoneyRatio);
 
     while (true) {
@@ -65,9 +50,177 @@ export async function main(ns) {
         ns.print(targets);
 
         //coordinate attacks
+        let target = targets[0];
+        let targetMaxMoney = ns.getServerMaxMoney(target);
+        let targetMoney = ns.getServerMoneyAvailable(target);
+        let targetMinSecurity = ns.getServerMinSecurityLevel(target);
+        let targetSecurity = ns.getServerSecurityLevel(target);
+        let targetSecDifference = targetSecurity - targetMinSecurity;
+        let weakThreads = 0;
+        let growThreads = 0;
+        let hackThreads = 0;
+        let addedGrowSecurity = 0;
+        let addedHackSecurity = 0;
+
+        ns.print(`First target is: ${target}`);
+        ns.print(`Max Money: ${targetMaxMoney} Availible Money: ${targetMoney}`);
+        ns.print(`Min Security: ${targetMinSecurity}, Current Security: ${targetSecurity}`);
+
+        //protect from a divide by zero error
+        if (targetMoney < 1) {
+            targetMoney = 1;
+        }
+
+        hackThreads = Math.floor(ns.hackAnalyzeThreads(target, targetMoney * hackMoneyRatio))
+        ns.print(`Threads needed to hack ${target} ${hackMoneyRatio *100}%: ${hackThreads}`);
+
+        //hack if close to min security
+        if (targetSecDifference < 0.5) {
+            let targetMoneyRatio = targetMaxMoney / targetMoney;
+            let hackReGrowRatio = 1;
+            let overallGrowRatio = 1;
+
+            if (targetMoneyRatio <= 1.1) {
+                hackThreads = Math.floor(ns.hackAnalyzeThreads(target, targetMoney * hackMoneyRatio))
+                hackReGrowRatio = 1 / (1 - hackMoneyRatio);
+                addedHackSecurity = hackThreads * hackThreadSecurityIncrease;
+            }
+
+            // grow what was missing before and what we expect to hack
+            // multiply the initial grow ratio by the expected new grow ratio needed after hack
+            overallGrowRatio = targetMoneyRatio * hackReGrowRatio;
+
+            // Considering 0 cores on all serers. 
+            // The last parameter 0 can be removed if optimizing for running slave threads on home server with > 0 cores only
+            // else, grow threads onother servers than home will not grow sufficiently and break perfect attack chains
+            growThreads = Math.ceil((ns.growthAnalyze(target, overallGrowRatio, 0)));
+
+            addedGrowSecurity = growThreads * growThreadSecurityIncrease;  
+        }
+        weakThreads = Math.ceil((targetSecDifference + addedGrowSecurity + addedHackSecurity) * 20);
+        ns.print(`Threads; Hack:${hackThreads} Grow:${growThreads} Weaken:${weakThreads}`);
+        let overallRamNeed = ((weakThreads + growThreads + hackThreads) * slaveScriptRam);
+        ns.print(`Ram Needed: ${overallRamNeed} System Free Ram: ${ramData.totalFreeRam}`);
+
+        let weakTime = 0;
+        let growTime = 0;
+        let hackTime = 0;
+        let parallelAttacks = 1;
+
+        if (overallRamNeed > ramData.totalFreeRam) {
+            //todo: need to setup a partial attack
+        } else if (hackThreads == 0) {
+            //todo: need to grow and weaken
+        } else {
+            weakTime = ns.getWeakenTime(target);
+            growTime = ns.getGrowTime(target);
+            hackTime = ns.getHackTime(target);
+            ns.print(`Weaken Time:${ns.tFormat(weakTime)} Grow Time:${ns.tFormat(growTime)} Hack Time:${ns.tFormat(hackTime)}`);
+            var maxAttacksDuringHack = Math.floor((weakTime - timeBetweenAttacks) / timeBetweenAttacks);
+            var moreRamNeed = 0;
+            ns.print(`maxAttacks: ${maxAttacksDuringHack}`);
+
+            for (parallelAttacks = 1; parallelAttacks < maxAttacksDuringHack; parallelAttacks++) {
+                // check if we have enough RAM for one more attack
+                moreRamNeed = ((weakThreads * (parallelAttacks + 1) + growThreads * (parallelAttacks + 1) +
+                    hackThreads * (parallelAttacks + 1)) * slaveScriptRam);
+                if (moreRamNeed >= ramData.overallFreeRam) {
+                    // we do not have enough RAM for more attacks
+                    break;
+                }
+                else if (parallelAttacks >= maxAttacksDuringHack) {
+                    // check if max parallel attacks have been limited 
+                    break;
+                }
+                else if ((ramData.overallFreeRam / ramData.overallMaxRam < 0.1) && freeRams.overallMaxRam < 512) {
+                    // if we are low on RAM, go for single attacks for better efficiency
+                    break;
+                }
+            }
+            ns.print(`INFO: ${parallelAttacks} attacks aimed at ${target} HGW[${hackThreads}|${growThreads}|${weakThreads}]`);
+        }
+
+        // re-calculate overall RAM need after scaling full attacs down or up
+        overallRamNeed = ((weakThreads + growThreads + hackThreads) * slaveScriptRam) * parallelAttacks;
+        if (overallRamNeed > ramData.overallFreeRam) {
+            // Typically, there should be enough RAM for the planned attack. Warn if not.
+            ns.print("WARN RAM calculation issue for target: " + target + " need / free: " + overallRamNeed + " / " + ramData.overallFreeRam);
+        }
+        ramData.overallFreeRam -= overallRamNeed;
+
+        let weakSleep = 0;
+        let growSleep = 0;
+        let hackSleep = 0;
+
+        // grow should finish timediff ms before weaken finishes
+        growSleep = (weakTime - growTime) - timeBetweenHGW;
+        if (growSleep < 0) {
+            // make sure that we do not get negative sleep value in case of crazy low execution times
+            // in this case, tweak time between attacks and time diff
+            ns.print("WARN: time synchronisation issue for parallel attacks");
+            growSleep = 0;
+            parallelAttacks = 1;
+        }
+        hackSleep = (weakTime - hackTime) - 2 * timeBetweenHGW;
+        if (hackSleep < 0) {
+            // make sure that we do not get negative sleep value in case of crazy low execution times
+            // in this case, tweak time between attacks and time diff
+            hackSleep = 0;
+            growSleep = 0;
+            parallelAttacks = 1;
+            ns.print("WARN time synchronisation issue for parallel attacks");
+        }
+        // ns.print(`weakSleep:${ns.tFormat(weakSleep)} growSleep:${ns.tFormat(growSleep)} hackSleep:${ns.tFormat(hackSleep)}`);
+
+        if (weakThreads > 0) {
+            tryToRunAttack(ns, weakenScriptName, weakThreads, ramData.serverRamData, target, weakSleep);
+        }
+        if (growThreads > 0) {
+            tryToRunAttack(ns, growScriptName, growThreads, ramData.serverRamData, target, growSleep);
+        }
+        if (hackThreads > 0) {
+            tryToRunAttack(ns, hackScriptName, hackThreads, ramData.serverRamData, target, hackSleep);
+        }
+
 
         await ns.sleep(waitTimeBetweenManagementCycles * 10);
     }
+}
+
+function coordinateAttack(ns, servers, ramData, targets) {
+
+}
+
+function tryToRunAttack(ns, script, threads, serversRamData, target, sleepTime) {
+    while (serversRamData.length) {
+        let host = serversRamData[0].host;
+        let ram = serversRamData[0].freeRam;
+        
+
+        //not enough ram to run script, skip
+        if (ram < slaveScriptRam) {
+            serversRamData.shift();
+        }
+        //server can run some threads needed
+        else if (ram < slaveScriptRam * threads) {
+            const threadForThisHost = Math.floor(ram / slaveScriptRam);
+            ns.print(`TRACE: ${host} can run ${threadForThisHost} threads out of ${threads}`);
+            ns.exec(script, host, threadForThisHost, target, sleepTime);
+            threads -= threadForThisHost;
+            serversRamData.shift();
+        }
+        //server can run whole task
+        else {
+            ns.print(`TRACE: ${host} running ${script} on ${target} with ${threads} threads after ${ns.tFormat(sleepTime)}`);
+            ns.exec(script, host, threads, target, sleepTime);
+            serversRamData[0].freeRam -= slaveScriptRam * threads;
+            return true;
+        }
+    }
+
+    // we did not find enough RAM to run all remaining threads. Something went from in the RAM calculation
+    ns.print("WARN missing " + slaveScriptRam * threads + " for " + script + " RAM for target " + target);
+    return false;
 }
 
 /** Scan all known servers and attempt to gain root access */
@@ -168,4 +321,26 @@ function getAndSortTargets(ns, servers) {
                                     && ns.getServerGrowth(server) > 1)
                             .sort((a, b) => 5 * ns.getServerMinSecurityLevel(a) - 5 * ns.getServerMinSecurityLevel(b)
                             + ns.getServerGrowth(b) - ns.getServerGrowth(a));
+}
+
+function setInitialHackMoneyRatio(ns, homeRam) {
+    let ratio = hackMoneyRatio
+    if (homeRam >= 65536) {
+        ratio = 0.99;
+        ns.print("Increase hackMoneyRatio to " + ratio)
+    }
+    else if (homeRam >= 16384) {
+        ratio = 0.9;
+        ns.print("Increase hackMoneyRatio to " + ratio)
+    }
+    else if (homeRam > 8192) {
+        ratio = 0.5;
+        ns.print("Increase hackMoneyRatio to " + ratio)
+    }
+    else if (homeRam > 2048) {
+        ratio = 0.2;
+        ns.print("Increase hackMoneyRatio to " + ratio)
+    }
+
+    return ratio;
 }
